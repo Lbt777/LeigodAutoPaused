@@ -22,7 +22,6 @@ var (
 	passEdit  *walk.LineEdit
 	barkEdit  *walk.LineEdit
 	tray      *walk.NotifyIcon
-	startAct  *walk.Action
 
 	authed   atomic.Bool // 当前有可用的登录态（客户端 token 或账号密码登录）
 	exiting  bool
@@ -202,33 +201,13 @@ func setupTray() bool {
 	}
 	tray = t
 
-	add := func(text string, fn func()) {
-		a := walk.NewAction()
-		_ = a.SetText(text)
-		a.Triggered().Attach(fn)
-		_ = tray.ContextMenu().Actions().Add(a)
-	}
-	// 只展示当前监控的进程名
-	procAct := walk.NewAction()
-	_ = procAct.SetText("监控进程：" + cfgStore.Load().(Config).Process)
-	_ = procAct.SetEnabled(false)
-	_ = tray.ContextMenu().Actions().Add(procAct)
-
-	add("打开设置", showFromTray)
-	add("立即暂停", manualPause)
-
-	startAct = walk.NewAction()
-	_ = startAct.SetText("开机启动")
-	_ = startAct.SetChecked(autostartEnabled())
-	startAct.Triggered().Attach(toggleAutostart)
-	_ = tray.ContextMenu().Actions().Add(startAct)
-
-	add("退出", quit)
-
 	tray.MessageClicked().Attach(showFromTray)
 	tray.MouseUp().Attach(func(x, y int, button walk.MouseButton) {
-		if button == walk.LeftButton {
+		switch button {
+		case walk.LeftButton:
 			showFromTray()
+		case walk.RightButton:
+			showTrayMenu()
 		}
 	})
 	return true
@@ -259,7 +238,6 @@ func toggleAutostart() {
 		} else {
 			_ = setAutostart(true)
 		}
-		_ = startAct.SetChecked(autostartEnabled())
 	}()
 }
 
@@ -339,6 +317,15 @@ func main() {
 	fillUI()
 	freezeSize()
 	disableMaximize()
+
+	// 布局把窗口撑到最终尺寸后再居中，否则拿到的是初始高度
+	centered := false
+	mw.SizeChanged().Attach(func() {
+		if !centered {
+			centered = true
+			centerWindow()
+		}
+	})
 
 	// 点关闭只隐藏，不退出
 	mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
