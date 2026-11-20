@@ -46,30 +46,27 @@ func buildUI() error {
 		Font: Font{Family: "Microsoft YaHei UI", PointSize: 9},
 		Children: []Widget{
 			Composite{
-				MaxSize: Size{Height: 26},
-				Layout:  Grid{Columns: 4, Spacing: 6},
+				Layout: Grid{Columns: 4, Spacing: 6},
 				Children: []Widget{
-					Label{Text: "手机号", MaxSize: Size{Height: 26}},
-					LineEdit{AssignTo: &accountEd, MinSize: Size{Width: 140}, MaxSize: Size{Height: 26}},
-					Label{Text: "密码", MaxSize: Size{Height: 26}},
-					LineEdit{AssignTo: &passEdit, PasswordMode: true, MinSize: Size{Width: 120}, MaxSize: Size{Height: 26}},
+					Label{Text: "手机号"},
+					LineEdit{AssignTo: &accountEd, MinSize: Size{Width: 140}},
+					Label{Text: "密码"},
+					LineEdit{AssignTo: &passEdit, PasswordMode: true, MinSize: Size{Width: 120}},
 				},
 			},
 
 			Composite{
-				MaxSize: Size{Height: 26},
-				Layout:  Grid{Columns: 2, Spacing: 6},
+				Layout: Grid{Columns: 2, Spacing: 6},
 				Children: []Widget{
-					Label{Text: "Bark Key", MinSize: Size{Width: 60}, MaxSize: Size{Height: 26}},
-					LineEdit{AssignTo: &barkEdit, CueBanner: "留空则不推送", MaxSize: Size{Height: 26}},
+					Label{Text: "Bark App Key"},
+					LineEdit{AssignTo: &barkEdit, CueBanner: "留空则不推送"},
 				},
 			},
 
 			Composite{
-				MaxSize: Size{Height: 30},
-				Layout:  HBox{Spacing: 8},
+				Layout: HBox{Spacing: 8},
 				Children: []Widget{
-					PushButton{Text: "保存", MinSize: Size{Width: 90, Height: 30}, MaxSize: Size{Width: 90}, OnClicked: saveSettings},
+					PushButton{Text: "保存", MinSize: Size{Width: 90}, MaxSize: Size{Width: 90}, OnClicked: saveSettings},
 				},
 			},
 		},
@@ -129,16 +126,8 @@ func afterPause(reason string, ok bool, msg string, needLogin bool) {
 
 func manualPause() {
 	go func() {
-		c := cfgStore.Load().(Config)
-		ok, msg, needLogin := pauseNow(c)
+		ok, msg, needLogin := pauseNow(cfgStore.Load().(Config))
 		afterPause("手动暂停", ok, msg, needLogin)
-		if tray != nil {
-			if ok {
-				_ = tray.ShowMessage("雷神自动暂停", msg)
-			} else {
-				_ = tray.ShowMessage("雷神暂停失败", msg)
-			}
-		}
 	}()
 }
 

@@ -1,8 +1,10 @@
-# 雷神自动暂停（Leigod Auto Paused）
+﻿# 雷神自动暂停（Leigod Auto Paused）
 
-检测 PUBG（`TslGame.exe`）退出后，自动调用雷神加速器的暂停接口，并通过 Bark 推送到手机。
+**针对 PUBG（`TslGame.exe`）**：检测游戏退出后，自动调用雷神加速器的暂停接口，并通过 Bark 推送到手机。
 
 用 Go + walk 写的单文件 Windows 桌面程序，常驻托盘，无控制台窗口。
+
+> 只监控 `TslGame.exe`。要监控别的游戏，见下方「换成其他游戏」。
 
 ## 功能
 
@@ -16,9 +18,9 @@
 
 ## 界面
 
-三个输入框：手机号 / 密码 / Bark Key，一个「保存」按钮。
+三个输入框：手机号 / 密码 / Bark App Key，一个「保存」按钮。
 
-点保存 = 保存配置 + 校验登录（已登录时只保存 Bark Key）；保存成功后窗口自动转入托盘后台运行。
+点保存 = 保存配置 + 校验登录（已登录时只保存 Bark App Key）；保存成功后窗口自动转入托盘后台运行。
 
 ## 构建
 
@@ -34,6 +36,45 @@ go build -trimpath -ldflags "-s -w -H windowsgui" -o LeishenPause.exe .
 go install github.com/akavel/rsrc@v0.10.2
 rsrc -manifest app.manifest -o rsrc.syso -arch amd64
 ```
+
+构建产物就在当前目录，双击即可运行（无控制台窗口）。
+
+## 换成其他游戏
+
+程序把游戏进程名写死在 `config.go` 里，默认 `TslGame`（PUBG）。换游戏只要改一行再重新打包：
+
+1. 打开 `config.go`，找到：
+
+   ```go
+   const (
+       gameProcess  = "TslGame"
+       checkSeconds = 5
+   )
+   ```
+
+   - `gameProcess`：目标游戏的进程名，**不带 `.exe`**，例如：
+     - 永劫无间：`NarakaBladepoint`
+     - APEX：`r5apex`
+     - 战地：`bf1`
+     - 原神：`YuanShen`
+   - `checkSeconds`：检测间隔秒数，默认 5 秒
+
+   进程名可以这样确认：游戏运行时打开任务管理器 →「详细信息」→ 看可执行文件名字，去掉 `.exe` 即可；也可以在 PowerShell 里跑
+   `Get-Process | Where-Object { $_.MainWindowTitle } | Select-Object ProcessName`。
+
+2. 重新打包：
+
+   ```bash
+   go build -trimpath -ldflags "-s -w -H windowsgui" -o LeishenPause.exe .
+   ```
+
+   想改程序名/窗口标题就一起改 `main.go` 里的 `Title` 和输出文件名。
+
+3. 用新 exe 替换旧文件，然后：
+   - 托盘右键 →「退出」，关掉正在运行的旧实例；
+   - 双击新 exe 启动（会自动刷新开机自启任务的路径指向新文件）。
+
+> 注意：程序逻辑是「监控的进程从运行变为不存在时暂停加速」，所以填的进程名必须和游戏真实进程名一致，否则永远不会触发暂停。
 
 ## 配置
 
