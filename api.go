@@ -160,7 +160,7 @@ func loginSession(cfg Config) error {
 	if strings.TrimSpace(cfg.Account) == "" {
 		return fmt.Errorf("未保存手机号")
 	}
-	pwd := decryptText(cfg.Password)
+	pwd := strings.TrimSpace(cfg.Password)
 	if pwd == "" {
 		return fmt.Errorf("未保存密码")
 	}

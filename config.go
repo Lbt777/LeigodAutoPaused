@@ -1,10 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,45 +8,79 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// 配置文件沿用旧版的字段名，两个版本可以共用同一份 config.json
+// 配置全部来自本机的 config.ini，密码是明文，不加密、不上传
 type Config struct {
-	Interval int    `json:"IntervalSeconds"`
-	Game     string `json:"GameProcess"`
-	BarkURL  string `json:"BarkUrl"`
-	Account  string `json:"Account"`
-	Password string `json:"Password"` // DPAPI 加密后的 hex
+	Process  string // 游戏进程名，不带 .exe
+	Account  string
+	Password string
+	BarkKey  string
 }
 
-const autostartTask = "LeishenAutoPause"
-
-// 内置固定值，界面不再让用户填
 const (
-	gameProcess  = "TslGame"
-	checkSeconds = 5
+	defaultProcess = "TslGame"
+	checkSeconds   = 5
+	autostartTask  = "LeishenAutoPause"
 )
 
-func dataDir() string   { return filepath.Join(os.Getenv("APPDATA"), "LeishenAutoPause") }
-func configPath() string { return filepath.Join(dataDir(), "config.json") }
+func dataDir() string    { return filepath.Join(os.Getenv("APPDATA"), "LeishenAutoPause") }
+func configPath() string { return filepath.Join(dataDir(), "config.ini") }
 
-func defaultConfig() Config {
-	return Config{Interval: checkSeconds, Game: gameProcess}
+func defaultConfig() Config { return Config{Process: defaultProcess} }
+
+func (c Config) ready() bool {
+	return c.Account != "" && c.Password != "" && c.BarkKey != ""
 }
 
+const configTemplate = `; 雷神自动暂停 · 本地配置（仅保存在本机，不会上传）
+; 游戏进程名不带 .exe，例如 PUBG 是 TslGame、永劫无间是 NarakaBladepoint
+游戏进程名=%s
+; 雷神加速器账号（手机号）
+账号=%s
+; 雷神加速器密码（明文，仅存本机）
+密码=%s
+; Bark App 首页复制的设备 Key，留空则不推送
+BarkAppKey=%s
+`
+
 func loadConfig() Config {
-	c := defaultConfig()
-	if b, err := os.ReadFile(configPath()); err == nil {
-		// 旧版 PowerShell 写出的文件带 UTF-8 BOM，JSON 解析前要剥掉
-		b = bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF})
-		_ = json.Unmarshal(b, &c)
+	b, err := os.ReadFile(configPath())
+	if err != nil {
+		return defaultConfig()
 	}
-	c.Interval = checkSeconds
-	c.Game = gameProcess
+	return parseConfig(string(b))
+}
+
+func parseConfig(text string) Config {
+	c := defaultConfig()
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, "\ufeff"))
+		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		switch k {
+		case "游戏进程名", "进程名":
+			c.Process = v
+		case "账号", "手机号":
+			c.Account = v
+		case "密码":
+			c.Password = v
+		case "BarkAppKey", "BarkKey":
+			c.BarkKey = v
+		}
+	}
+	if c.Process == "" {
+		c.Process = defaultProcess
+	}
 	return c
 }
 
@@ -58,27 +88,20 @@ func saveConfig(c Config) error {
 	if err := os.MkdirAll(dataDir(), 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configPath(), b, 0o644)
+	return os.WriteFile(configPath(), []byte(fmt.Sprintf(configTemplate,
+		c.Process, c.Account, c.Password, c.BarkKey)), 0o644)
 }
 
-// 界面上只填设备 Key，配置里存完整地址
-func (c Config) barkKey() string {
-	u := strings.TrimSpace(c.BarkURL)
-	if u == "" {
-		return ""
+// 配置文件不存在时写一份空模板，方便用户直接改
+func ensureConfigFile() {
+	if _, err := os.Stat(configPath()); err == nil {
+		return
 	}
-	if strings.HasPrefix(u, "http") {
-		u = strings.TrimRight(u, "/")
-		if i := strings.LastIndex(u, "/"); i >= 0 {
-			return u[i+1:]
-		}
-		return ""
+	if err := os.MkdirAll(dataDir(), 0o755); err != nil {
+		return
 	}
-	return strings.Trim(u, "/")
+	_ = os.WriteFile(configPath(), []byte(fmt.Sprintf(configTemplate,
+		defaultProcess, "", "", "")), 0o644)
 }
 
 func barkURLFromKey(key string) string {
@@ -90,88 +113,6 @@ func barkURLFromKey(key string) string {
 		return strings.TrimRight(k, "/")
 	}
 	return "https://api.day.app/" + strings.Trim(k, "/")
-}
-
-// ---------------------------------------------------------------- DPAPI
-
-type dataBlob struct {
-	cbData uint32
-	pbData *byte
-}
-
-var (
-	crypt32              = syscall.NewLazyDLL("crypt32.dll")
-	procCryptProtectData   = crypt32.NewProc("CryptProtectData")
-	procCryptUnprotectData = crypt32.NewProc("CryptUnprotectData")
-	procLocalFree          = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree")
-)
-
-func dpapi(protect bool, data []byte) ([]byte, error) {
-	var in, out dataBlob
-	in.cbData = uint32(len(data))
-	if len(data) > 0 {
-		in.pbData = &data[0]
-	}
-	proc := procCryptUnprotectData
-	if protect {
-		proc = procCryptProtectData
-	}
-	ret, _, err := proc.Call(
-		uintptr(unsafe.Pointer(&in)), 0, 0, 0, 0, 0,
-		uintptr(unsafe.Pointer(&out)))
-	if ret == 0 {
-		return nil, err
-	}
-	defer procLocalFree.Call(uintptr(unsafe.Pointer(out.pbData)))
-	return append([]byte(nil), unsafe.Slice(out.pbData, out.cbData)...), nil
-}
-
-func encryptText(s string) string {
-	if s == "" {
-		return ""
-	}
-	// DPAPI/SecureString 约定明文是 UTF-16LE，这样新旧版本可以互相解密
-	b, err := dpapi(true, utf16LEBytes(s))
-	if err != nil {
-		return ""
-	}
-	return hex.EncodeToString(b)
-}
-
-// 解不开（换机器 / 换 Windows 用户）时返回空串，界面上重新填一次即可
-func decryptText(h string) string {
-	if h == "" {
-		return ""
-	}
-	b, err := hex.DecodeString(h)
-	if err != nil {
-		return ""
-	}
-	p, err := dpapi(false, b)
-	if err != nil {
-		return ""
-	}
-	return decodeUTF16LE(p)
-}
-
-func utf16LEBytes(s string) []byte {
-	u := utf16.Encode([]rune(s))
-	b := make([]byte, len(u)*2)
-	for i, v := range u {
-		binary.LittleEndian.PutUint16(b[i*2:], v)
-	}
-	return b
-}
-
-func decodeUTF16LE(b []byte) string {
-	if len(b)%2 == 1 {
-		b = b[:len(b)-1]
-	}
-	u := make([]uint16, len(b)/2)
-	for i := range u {
-		u[i] = binary.LittleEndian.Uint16(b[i*2:])
-	}
-	return string(utf16.Decode(u))
 }
 
 // ---------------------------------------------------------------- 进程 / 自启 / 单实例

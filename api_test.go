@@ -33,8 +33,18 @@ func TestBarkKeyRoundTrip(t *testing.T) {
 	if got := barkURLFromKey(""); got != "" {
 		t.Fatalf("空 Key 应返回空：%s", got)
 	}
-	c := Config{BarkURL: "https://api.day.app/abcDEF123"}
-	if got := c.barkKey(); got != "abcDEF123" {
-		t.Fatalf("取 Key 失败：%s", got)
+}
+
+// config.ini 解析：注释、空格、密码里的 = 都要正确处理
+func TestParseConfig(t *testing.T) {
+	c := parseConfig("; 注释行\n\n游戏进程名 = NarakaBladepoint \n账号=13800138000\n密码=abc=123\nBarkAppKey=k1\n")
+	if c.Process != "NarakaBladepoint" || c.Account != "13800138000" || c.Password != "abc=123" || c.BarkKey != "k1" {
+		t.Fatalf("解析结果不对：%+v", c)
+	}
+	if !c.ready() {
+		t.Fatal("四项齐全应视为就绪")
+	}
+	if got := parseConfig("").Process; got != defaultProcess {
+		t.Fatalf("缺省进程名应为 %s，实际 %s", defaultProcess, got)
 	}
 }

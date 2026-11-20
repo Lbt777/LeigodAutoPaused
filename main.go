@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"image"
@@ -75,8 +75,8 @@ func buildUI() error {
 
 func fillUI() {
 	_ = accountEd.SetText(cfg.Account)
-	_ = passEdit.SetText(decryptText(cfg.Password))
-	_ = barkEdit.SetText(cfg.barkKey())
+	_ = passEdit.SetText(cfg.Password)
+	_ = barkEdit.SetText(cfg.BarkKey)
 }
 
 // 关掉最大化按钮（walk 没有对应 API，直接改窗口样式）
@@ -121,7 +121,7 @@ func afterPause(reason string, ok bool, msg string, needLogin bool) {
 	if !ok {
 		title = "雷神暂停失败"
 	}
-	pushBark(c.barkKey(), title, reason+"\n"+msg+"\n"+time.Now().Format("2006-01-02 15:04:05"))
+	pushBark(c.BarkKey, title, reason+"\n"+msg+"\n"+time.Now().Format("2006-01-02 15:04:05"))
 }
 
 func manualPause() {
@@ -131,14 +131,12 @@ func manualPause() {
 	}()
 }
 
-// 保存：顺带登录；已登录时只存 Bark Key
+// 保存：顺带登录；已登录时只更新配置
 func saveSettings() {
 	c := cfgStore.Load().(Config)
-	c.BarkURL = barkURLFromKey(barkEdit.Text())
 	c.Account = strings.TrimSpace(accountEd.Text())
-	if pwd := passEdit.Text(); pwd != "" {
-		c.Password = encryptText(pwd)
-	}
+	c.Password = strings.TrimSpace(passEdit.Text())
+	c.BarkKey = strings.TrimSpace(barkEdit.Text())
 	if err := saveConfig(c); err != nil {
 		walk.MsgBox(mw, "雷神自动暂停", "保存失败："+err.Error(), walk.MsgBoxIconError)
 		return
@@ -157,6 +155,9 @@ func verifyAndHide(c Config) {
 			return
 		}
 		authed.Store(true)
+	}
+	if !c.ready() {
+		return // 配置还没填全，留在界面
 	}
 	mw.Synchronize(func() {
 		mw.SetVisible(false)
@@ -197,6 +198,12 @@ func setupTray() {
 		a.Triggered().Attach(fn)
 		_ = tray.ContextMenu().Actions().Add(a)
 	}
+	// 只展示当前监控的进程名
+	procAct := walk.NewAction()
+	_ = procAct.SetText("监控进程：" + cfgStore.Load().(Config).Process)
+	_ = procAct.SetEnabled(false)
+	_ = tray.ContextMenu().Actions().Add(procAct)
+
 	add("打开设置", showFromTray)
 	add("立即暂停", manualPause)
 
@@ -243,7 +250,7 @@ func monitorLoop() {
 	for {
 		time.Sleep(checkSeconds * time.Second)
 		c := cfgStore.Load().(Config)
-		if processRunning(c.Game) {
+		if processRunning(c.Process) {
 			seenMu.Lock()
 			gameSeen = true
 			seenMu.Unlock()
@@ -257,14 +264,14 @@ func monitorLoop() {
 			continue
 		}
 		ok, msg, needLogin := pauseNow(c)
-		afterPause("游戏 "+c.Game+".exe 已退出", ok, msg, needLogin)
+		afterPause("游戏 "+c.Process+".exe 已退出", ok, msg, needLogin)
 	}
 }
 
 // 静默确认登录态：客户端 token 优先，其次用保存的账号密码登录
 func detectSession() {
 	c := cfgStore.Load().(Config)
-	if processRunning(c.Game) {
+	if processRunning(c.Process) {
 		// 游戏运行中不做暂停验证，避免影响加速
 		if clientToken() != "" {
 			authed.Store(true)
@@ -293,6 +300,7 @@ func main() {
 		return
 	}
 
+	ensureConfigFile()
 	cfgStore.Store(cfg)
 
 	if err := buildUI(); err != nil {
@@ -314,21 +322,23 @@ func main() {
 	setupTray()
 
 	seenMu.Lock()
-	gameSeen = processRunning(cfg.Game)
+	gameSeen = processRunning(cfg.Process)
 	seenMu.Unlock()
 
 	go monitorLoop()
+	// 第一次启动/配置没填全，直接把界面露出来，填好保存后才转后台
+	if !cfg.ready() {
+		mw.SetVisible(true)
+	}
 	go func() {
 		ensureAutostart()
 		detectSession()
 		if tray != nil {
 			_ = tray.SetToolTip(trayTip())
 		}
-		// 已就绪且配过 Bark Key 就直接后台运行；否则把窗口露出来让用户补配置
-		if authed.Load() && cfgStore.Load().(Config).barkKey() != "" {
-			return
+		if !authed.Load() {
+			showWindow() // 配置齐全但登录失败时也要能改配置
 		}
-		showWindow()
 	}()
 
 	mw.Run()
