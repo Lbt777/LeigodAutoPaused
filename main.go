@@ -36,7 +36,7 @@ const winWidth = 452
 func buildUI() error {
 	return MainWindow{
 		AssignTo: &mw,
-		Title:    "雷神自动暂停",
+		Title:    "雷神自动暂停 " + appVersion,
 		Visible:  false,
 		Size:     Size{Width: winWidth, Height: 20},
 		Layout: VBox{
@@ -179,18 +179,28 @@ func showFromTray() {
 	showWindow()
 }
 
-func setupTray() {
+func setupTray() bool {
+	if tray != nil {
+		return true
+	}
 	icon, err := walk.NewIconFromImage(appIcon())
 	if err != nil {
 		icon = walk.IconApplication()
 	}
-	tray, err = walk.NewNotifyIcon(mw)
+	t, err := walk.NewNotifyIcon(mw)
 	if err != nil {
-		return
+		return false // 登录时资源管理器可能还没起来，由调用方重试
 	}
-	_ = tray.SetIcon(icon)
-	_ = tray.SetToolTip(trayTip())
-	_ = tray.SetVisible(true)
+	if err := t.SetIcon(icon); err != nil {
+		t.Dispose()
+		return false
+	}
+	_ = t.SetToolTip(trayTip())
+	if err := t.SetVisible(true); err != nil {
+		t.Dispose()
+		return false
+	}
+	tray = t
 
 	add := func(text string, fn func()) {
 		a := walk.NewAction()
@@ -221,6 +231,25 @@ func setupTray() {
 			showFromTray()
 		}
 	})
+	return true
+}
+
+// 托盘建不出来（开机自启时 shell 未就绪）就重试，实在不行把窗口露出来
+func setupTrayWithRetry() {
+	if setupTray() {
+		return
+	}
+	go func() {
+		for i := 0; i < 40; i++ {
+			time.Sleep(3 * time.Second)
+			ok := false
+			mw.Synchronize(func() { ok = setupTray() })
+			if ok {
+				return
+			}
+		}
+		showWindow()
+	}()
 }
 
 func toggleAutostart() {
@@ -238,7 +267,7 @@ func toggleAutostart() {
 func ensureAutostart() { _ = setAutostart(true) }
 
 func appIcon() image.Image {
-	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	img := image.NewNRGBA(image.Rect(0, 0, 32, 32))
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{R: 32, G: 120, B: 216, A: 255}}, image.Point{}, draw.Src)
 	white := image.NewUniform(color.White)
 	draw.Draw(img, image.Rect(9, 9, 14, 23), white, image.Point{}, draw.Src)
@@ -319,7 +348,7 @@ func main() {
 		}
 	})
 
-	setupTray()
+	setupTrayWithRetry()
 
 	seenMu.Lock()
 	gameSeen = processRunning(cfg.Process)

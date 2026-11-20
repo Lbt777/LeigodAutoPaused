@@ -15,7 +15,7 @@ Go + walk 编写的单文件 Windows 程序，常驻托盘，无控制台窗口�
   - 打开设置 / 立即暂停
   - 开机启动 —— 勾选即开启，取消勾选即删除自启
   - 退出
-- **开机自启**：首次运行自动创建计划任务，exe 路径变化时自动刷新
+- **开机自启**：首次运行自动写入注册表 `HKCU\...\Run`，exe 路径变化时自动刷新
 - 单实例运行，重复启动会提示
 
 ## 配置（本地 config.ini）
@@ -87,6 +87,11 @@ go install github.com/akavel/rsrc@v0.10.2
 rsrc -manifest app.manifest -o rsrc.syso -arch amd64
 ```
 
+## 版本与打包
+
+- 版本号两位（如 `1.0`、`1.1`），显示在窗口标题后面：`雷神自动暂停 1.0`。
+- 用 `build.ps1` 打包：按当前版本号生成 `LeishenPause-<版本>.exe`，然后把 `version.go` 里的版本号 +0.1，下次打包就是新版本。
+
 ## 代码结构
 
 | 文件 | 作用 |
@@ -95,6 +100,8 @@ rsrc -manifest app.manifest -o rsrc.syso -arch amd64
 | `api.go` | 登录 / 暂停 / Bark 推送接口 |
 | `token.go` | 读取雷神客户端本地登录 token |
 | `config.go` | `config.ini` 读写、进程检测、自启、单实例 |
+| `version.go` | 版本号（由 `build.ps1` 递增） |
+| `build.ps1` | 打包脚本 |
 
 ## 说明
 

@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // 配置全部来自本机的 config.ini，密码是明文，不加密、不上传
@@ -24,7 +25,8 @@ type Config struct {
 const (
 	defaultProcess = "TslGame"
 	checkSeconds   = 5
-	autostartTask  = "LeishenAutoPause"
+	autostartKey   = `Software\Microsoft\Windows\CurrentVersion\Run`
+	autostartValue = "LeishenAutoPause"
 )
 
 func dataDir() string    { return filepath.Join(os.Getenv("APPDATA"), "LeishenAutoPause") }
@@ -146,19 +148,36 @@ func hiddenCmd(name string, args ...string) *exec.Cmd {
 }
 
 func autostartEnabled() bool {
-	return hiddenCmd("schtasks", "/Query", "/TN", autostartTask).Run() == nil
+	k, err := registry.OpenKey(registry.CURRENT_USER, autostartKey, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	defer k.Close()
+	v, _, err := k.GetStringValue(autostartValue)
+	if err != nil {
+		return false
+	}
+	exe, err := os.Executable()
+	return err == nil && v == `"`+exe+`"`
 }
 
+// 写 HKCU\...\Run，登录后由系统在用户桌面里拉起，托盘一定能建出来
 func setAutostart(on bool) error {
-	if on {
-		exe, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		return hiddenCmd("schtasks", "/Create", "/SC", "ONLOGON", "/TN", autostartTask,
-			"/TR", fmt.Sprintf(`"%s"`, exe), "/F").Run()
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, autostartKey, registry.SET_VALUE)
+	if err != nil {
+		return err
 	}
-	return hiddenCmd("schtasks", "/Delete", "/TN", autostartTask, "/F").Run()
+	defer k.Close()
+	if !on {
+		return k.DeleteValue(autostartValue)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// 清掉旧版本用计划任务写的自启，避免登录时启动两份
+	_ = hiddenCmd("schtasks", "/Delete", "/TN", "LeishenAutoPause", "/F").Run()
+	return k.SetStringValue(autostartValue, `"`+exe+`"`)
 }
 
 var singleMutex windows.Handle

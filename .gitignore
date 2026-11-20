@@ -5,3 +5,4 @@ config.json
 .vscode/
 *.exe~
 config.ini
+!LeishenPause-*.exe
