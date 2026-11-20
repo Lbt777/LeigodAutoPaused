@@ -1,0 +1,346 @@
+package main
+
+import (
+	"image"
+	"image/color"
+	"image/draw"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/lxn/walk"
+	. "github.com/lxn/walk/declarative"
+)
+
+var (
+	cfg = loadConfig()
+
+	mw        *walk.MainWindow
+	accountEd *walk.LineEdit
+	passEdit  *walk.LineEdit
+	barkEdit  *walk.LineEdit
+	tray      *walk.NotifyIcon
+	startAct  *walk.Action
+
+	authed   atomic.Bool // 当前有可用的登录态（客户端 token 或账号密码登录）
+	exiting  bool
+	gameSeen bool
+	seenMu   sync.Mutex
+	cfgStore atomic.Value
+)
+
+const winWidth = 452
+
+func buildUI() error {
+	return MainWindow{
+		AssignTo: &mw,
+		Title:    "雷神自动暂停",
+		Visible:  false,
+		Size:     Size{Width: winWidth, Height: 20},
+		Layout: VBox{
+			Spacing: 8,
+			Margins: Margins{Left: 12, Top: 10, Right: 12, Bottom: 10},
+		},
+		Font: Font{Family: "Microsoft YaHei UI", PointSize: 9},
+		Children: []Widget{
+			Composite{
+				MaxSize: Size{Height: 26},
+				Layout:  Grid{Columns: 4, Spacing: 6},
+				Children: []Widget{
+					Label{Text: "手机号", MaxSize: Size{Height: 26}},
+					LineEdit{AssignTo: &accountEd, MinSize: Size{Width: 140}, MaxSize: Size{Height: 26}},
+					Label{Text: "密码", MaxSize: Size{Height: 26}},
+					LineEdit{AssignTo: &passEdit, PasswordMode: true, MinSize: Size{Width: 120}, MaxSize: Size{Height: 26}},
+				},
+			},
+
+			Composite{
+				MaxSize: Size{Height: 26},
+				Layout:  Grid{Columns: 2, Spacing: 6},
+				Children: []Widget{
+					Label{Text: "Bark Key", MinSize: Size{Width: 60}, MaxSize: Size{Height: 26}},
+					LineEdit{AssignTo: &barkEdit, CueBanner: "留空则不推送", MaxSize: Size{Height: 26}},
+				},
+			},
+
+			Composite{
+				MaxSize: Size{Height: 30},
+				Layout:  HBox{Spacing: 8},
+				Children: []Widget{
+					PushButton{Text: "保存", MinSize: Size{Width: 90, Height: 30}, MaxSize: Size{Width: 90}, OnClicked: saveSettings},
+				},
+			},
+		},
+	}.Create()
+}
+
+func fillUI() {
+	_ = accountEd.SetText(cfg.Account)
+	_ = passEdit.SetText(decryptText(cfg.Password))
+	_ = barkEdit.SetText(cfg.barkKey())
+}
+
+// 关掉最大化按钮（walk 没有对应 API，直接改窗口样式）
+func disableMaximize() {
+	const gwlStyle = ^uintptr(15) // GWL_STYLE = -16
+	user32 := syscall.NewLazyDLL("user32.dll")
+	h := uintptr(mw.Handle())
+	style, _, _ := user32.NewProc("GetWindowLongW").Call(h, gwlStyle)
+	user32.NewProc("SetWindowLongW").Call(h, gwlStyle, style&^uintptr(0x00010000)) // 去掉 WS_MAXIMIZEBOX
+	user32.NewProc("SetWindowPos").Call(h, 0, 0, 0, 0, 0,
+		uintptr(0x0001|0x0002|0x0004|0x0020)) // NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
+}
+
+// 窗口尺寸交给布局决定后固定住：既不裁切，也不留拉伸出来的空白
+func freezeSize() {
+	_ = mw.SetSize(walk.Size{Width: winWidth, Height: 1})
+	size := mw.Size()
+	_ = mw.SetMinMaxSize(size, size)
+}
+
+func showWindow() {
+	mw.Synchronize(func() {
+		mw.SetVisible(true)
+		mw.Activate()
+	})
+}
+
+func trayTip() string {
+	if authed.Load() {
+		return "雷神自动暂停 · 已就绪"
+	}
+	return "雷神自动暂停 · 需要手机号和密码"
+}
+
+func afterPause(reason string, ok bool, msg string, needLogin bool) {
+	if !ok && needLogin {
+		authed.Store(false)
+		showWindow()
+	}
+	c := cfgStore.Load().(Config)
+	title := "雷神已自动暂停"
+	if !ok {
+		title = "雷神暂停失败"
+	}
+	pushBark(c.barkKey(), title, reason+"\n"+msg+"\n"+time.Now().Format("2006-01-02 15:04:05"))
+}
+
+func manualPause() {
+	go func() {
+		c := cfgStore.Load().(Config)
+		ok, msg, needLogin := pauseNow(c)
+		afterPause("手动暂停", ok, msg, needLogin)
+		if tray != nil {
+			if ok {
+				_ = tray.ShowMessage("雷神自动暂停", msg)
+			} else {
+				_ = tray.ShowMessage("雷神暂停失败", msg)
+			}
+		}
+	}()
+}
+
+// 保存：顺带登录；已登录时只存 Bark Key
+func saveSettings() {
+	c := cfgStore.Load().(Config)
+	c.BarkURL = barkURLFromKey(barkEdit.Text())
+	c.Account = strings.TrimSpace(accountEd.Text())
+	if pwd := passEdit.Text(); pwd != "" {
+		c.Password = encryptText(pwd)
+	}
+	if err := saveConfig(c); err != nil {
+		walk.MsgBox(mw, "雷神自动暂停", "保存失败："+err.Error(), walk.MsgBoxIconError)
+		return
+	}
+	cfgStore.Store(c)
+	go verifyAndHide(c)
+}
+
+func verifyAndHide(c Config) {
+	if !authed.Load() {
+		if err := loginSession(c); err != nil {
+			mw.Synchronize(func() {
+				mw.SetVisible(true)
+				walk.MsgBox(mw, "雷神自动暂停", "登录失败："+err.Error(), walk.MsgBoxIconWarning)
+			})
+			return
+		}
+		authed.Store(true)
+	}
+	mw.Synchronize(func() {
+		mw.SetVisible(false)
+		if tray != nil {
+			_ = tray.SetToolTip(trayTip())
+		}
+	})
+}
+
+func quit() {
+	exiting = true
+	if tray != nil {
+		_ = tray.Dispose()
+	}
+	mw.Close()
+}
+
+func showFromTray() {
+	showWindow()
+}
+
+func setupTray() {
+	icon, err := walk.NewIconFromImage(appIcon())
+	if err != nil {
+		icon = walk.IconApplication()
+	}
+	tray, err = walk.NewNotifyIcon(mw)
+	if err != nil {
+		return
+	}
+	_ = tray.SetIcon(icon)
+	_ = tray.SetToolTip(trayTip())
+	_ = tray.SetVisible(true)
+
+	add := func(text string, fn func()) {
+		a := walk.NewAction()
+		_ = a.SetText(text)
+		a.Triggered().Attach(fn)
+		_ = tray.ContextMenu().Actions().Add(a)
+	}
+	add("打开设置", showFromTray)
+	add("立即暂停", manualPause)
+
+	startAct = walk.NewAction()
+	_ = startAct.SetText("开机启动")
+	_ = startAct.SetChecked(autostartEnabled())
+	startAct.Triggered().Attach(toggleAutostart)
+	_ = tray.ContextMenu().Actions().Add(startAct)
+
+	add("退出", quit)
+
+	tray.MessageClicked().Attach(showFromTray)
+	tray.MouseUp().Attach(func(x, y int, button walk.MouseButton) {
+		if button == walk.LeftButton {
+			showFromTray()
+		}
+	})
+}
+
+func toggleAutostart() {
+	go func() {
+		if autostartEnabled() {
+			_ = setAutostart(false)
+		} else {
+			_ = setAutostart(true)
+		}
+		_ = startAct.SetChecked(autostartEnabled())
+	}()
+}
+
+// 每次启动刷新一次计划任务，保证路径正确（幂等）
+func ensureAutostart() { _ = setAutostart(true) }
+
+func appIcon() image.Image {
+	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{R: 32, G: 120, B: 216, A: 255}}, image.Point{}, draw.Src)
+	white := image.NewUniform(color.White)
+	draw.Draw(img, image.Rect(9, 9, 14, 23), white, image.Point{}, draw.Src)
+	draw.Draw(img, image.Rect(18, 9, 23, 23), white, image.Point{}, draw.Src)
+	return img
+}
+
+func monitorLoop() {
+	for {
+		time.Sleep(checkSeconds * time.Second)
+		c := cfgStore.Load().(Config)
+		if processRunning(c.Game) {
+			seenMu.Lock()
+			gameSeen = true
+			seenMu.Unlock()
+			continue
+		}
+		seenMu.Lock()
+		wasSeen := gameSeen
+		gameSeen = false
+		seenMu.Unlock()
+		if !wasSeen {
+			continue
+		}
+		ok, msg, needLogin := pauseNow(c)
+		afterPause("游戏 "+c.Game+".exe 已退出", ok, msg, needLogin)
+	}
+}
+
+// 静默确认登录态：客户端 token 优先，其次用保存的账号密码登录
+func detectSession() {
+	c := cfgStore.Load().(Config)
+	if processRunning(c.Game) {
+		// 游戏运行中不做暂停验证，避免影响加速
+		if clientToken() != "" {
+			authed.Store(true)
+			return
+		}
+		if loginSession(c) == nil {
+			authed.Store(true)
+		}
+		return
+	}
+	if t := clientToken(); t != "" {
+		if code, _, err := pauseWithToken(t); err == nil && (code == 0 || code == 400803) {
+			storeToken(t)
+			authed.Store(true)
+			return
+		}
+	}
+	if loginSession(c) == nil {
+		authed.Store(true)
+	}
+}
+
+func main() {
+	if !acquireSingleInstance() {
+		walk.MsgBox(nil, "雷神自动暂停", "程序已经在运行，请查看任务栏托盘图标。", walk.MsgBoxIconInformation)
+		return
+	}
+
+	cfgStore.Store(cfg)
+
+	if err := buildUI(); err != nil {
+		walk.MsgBox(nil, "启动失败", err.Error(), walk.MsgBoxIconError)
+		return
+	}
+	fillUI()
+	freezeSize()
+	disableMaximize()
+
+	// 点关闭只隐藏，不退出
+	mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		if !exiting {
+			*canceled = true
+			mw.SetVisible(false)
+		}
+	})
+
+	setupTray()
+
+	seenMu.Lock()
+	gameSeen = processRunning(cfg.Game)
+	seenMu.Unlock()
+
+	go monitorLoop()
+	go func() {
+		ensureAutostart()
+		detectSession()
+		if tray != nil {
+			_ = tray.SetToolTip(trayTip())
+		}
+		// 已就绪且配过 Bark Key 就直接后台运行；否则把窗口露出来让用户补配置
+		if authed.Load() && cfgStore.Load().(Config).barkKey() != "" {
+			return
+		}
+		showWindow()
+	}()
+
+	mw.Run()
+}
