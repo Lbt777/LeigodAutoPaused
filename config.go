@@ -32,8 +32,9 @@ func configPath() string { return filepath.Join(dataDir(), "config.ini") }
 
 func defaultConfig() Config { return Config{Process: defaultProcess} }
 
+// 账号密码填了就算就绪；BarkAppKey 选填，为空只是不推送
 func (c Config) ready() bool {
-	return c.Account != "" && c.Password != "" && c.BarkKey != ""
+	return c.Account != "" && c.Password != ""
 }
 
 const configTemplate = `; 雷神自动暂停 · 本地配置（仅保存在本机，不会上传）

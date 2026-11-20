@@ -42,7 +42,11 @@ func TestParseConfig(t *testing.T) {
 		t.Fatalf("解析结果不对：%+v", c)
 	}
 	if !c.ready() {
-		t.Fatal("四项齐全应视为就绪")
+		t.Fatal("账号密码齐全应视为就绪")
+	}
+	// BarkAppKey 选填，没有也算就绪
+	if noBark := (Config{Account: "13800138000", Password: "x"}); !noBark.ready() {
+		t.Fatal("缺少 BarkAppKey 不应影响就绪判断")
 	}
 	if got := parseConfig("").Process; got != defaultProcess {
 		t.Fatalf("缺省进程名应为 %s，实际 %s", defaultProcess, got)
