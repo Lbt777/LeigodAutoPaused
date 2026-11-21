@@ -18,8 +18,7 @@ import (
 var (
 	cfg = loadConfig()
 
-	appStart   = time.Now()
-	idlePaused bool // 本进程启动后是否已经因空闲/游戏退出暂停过
+	idleAnchor = time.Now() // 上次见到游戏或上次暂停的时间，空闲检测按此每 N 分钟循环
 
 	mw        *walk.MainWindow
 	accountEd *walk.LineEdit
@@ -265,6 +264,7 @@ func monitorLoop() {
 			seenMu.Lock()
 			gameSeen = true
 			seenMu.Unlock()
+			idleAnchor = time.Now() // 见到游戏，空闲计时重来
 			continue
 		}
 		seenMu.Lock()
@@ -272,18 +272,18 @@ func monitorLoop() {
 		gameSeen = false
 		seenMu.Unlock()
 
-		// 空闲检测：启动够久还没见过游戏，说明只开了加速器，暂停一次
-		if !wasSeen && !idlePaused && c.IdlePause &&
-			time.Since(appStart) >= time.Duration(c.IdleMinutes)*time.Minute {
-			idlePaused = true
+		// 空闲检测：每 N 分钟都没见到游戏，说明只开了加速器，暂停一次并推送
+		if !wasSeen && c.IdlePause &&
+			time.Since(idleAnchor) >= time.Duration(c.IdleMinutes)*time.Minute {
+			idleAnchor = time.Now()
 			ok, msg, needLogin := pauseNow(c)
-			afterPause(fmt.Sprintf("空闲检测：启动 %d 分钟未运行 %s.exe", c.IdleMinutes, c.Process), ok, msg, needLogin)
+			afterPause(fmt.Sprintf("空闲检测：已 %d 分钟未运行 %s.exe", c.IdleMinutes, c.Process), ok, msg, needLogin)
 			continue
 		}
 		if !wasSeen {
 			continue
 		}
-		idlePaused = true // 游戏退出已经暂停过，空闲检测不用重复
+		idleAnchor = time.Now() // 游戏退出已经暂停过，空闲计时从此刻重新开始
 		ok, msg, needLogin := pauseNow(c)
 		afterPause("游戏 "+c.Process+".exe 已退出", ok, msg, needLogin)
 	}

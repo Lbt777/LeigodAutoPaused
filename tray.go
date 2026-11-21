@@ -15,8 +15,7 @@ const (
 	menuIDPause     = 2
 	menuIDAutostart = 3
 	menuIDQuit      = 4
-	menuIDIdle      = 5
-	menuIDLevel     = 6
+	menuIDLevel     = 5
 	idleMinuteBase  = 100 // + 分钟数，区分空闲检测时长选项
 )
 
@@ -42,12 +41,12 @@ func showTrayMenu() {
 	appendMenu(h, win.MF_STRING, menuIDPause, "立即暂停")
 	appendMenu(h, checkFlags(autostartEnabled()), menuIDAutostart, "开机启动")
 
-	appendMenu(h, checkFlags(c.IdlePause), menuIDIdle, "空闲检测")
 	sub := win.CreatePopupMenu()
+	appendMenu(sub, checkFlags(!c.IdlePause), idleMinuteBase, "关闭")
 	for _, m := range []int{1, 3, 5, 10, 15, 30} {
-		appendMenu(sub, checkFlags(c.IdleMinutes == m), uintptr(idleMinuteBase+m), fmt.Sprintf("%d 分钟", m))
+		appendMenu(sub, checkFlags(c.IdlePause && c.IdleMinutes == m), uintptr(idleMinuteBase+m), fmt.Sprintf("%d 分钟", m))
 	}
-	appendMenu(h, win.MF_POPUP, uintptr(sub), "空闲检测时长")
+	appendMenu(h, win.MF_POPUP, uintptr(sub), "空闲检测")
 	appendMenu(h, checkFlags(c.TimeSensitive), menuIDLevel, "时效性通知")
 
 	appendMenu(h, win.MF_SEPARATOR, 0, "")
@@ -69,10 +68,13 @@ func showTrayMenu() {
 		manualPause()
 	case id == menuIDAutostart:
 		toggleAutostart()
-	case id == menuIDIdle:
-		updateConfig(func(c *Config) { c.IdlePause = !c.IdlePause })
+	case id == idleMinuteBase:
+		updateConfig(func(c *Config) { c.IdlePause = false })
 	case id > idleMinuteBase:
-		updateConfig(func(c *Config) { c.IdleMinutes = id - idleMinuteBase })
+		updateConfig(func(c *Config) {
+			c.IdlePause = true
+			c.IdleMinutes = id - idleMinuteBase
+		})
 	case id == menuIDLevel:
 		updateConfig(func(c *Config) { c.TimeSensitive = !c.TimeSensitive })
 	case id == menuIDQuit:
