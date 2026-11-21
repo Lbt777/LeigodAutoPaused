@@ -1,4 +1,4 @@
-﻿package main
+﻿﻿package main
 
 import (
 	"crypto/md5"
@@ -20,8 +20,9 @@ import (
 const (
 	apiBase = "https://webapi.leigod.com"
 	// 雷神官网前端页面公开的签名常量（不是账号/个人密钥），登录和暂停接口都靠它做请求签名
-	webSignKey = "5C5A639C20665313622F51E93E3F2783"
-	browserUA  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	webSignKey       = "5C5A639C20665313622F51E93E3F2783"
+	browserUA        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	msgAlreadyPaused = "已经处于暂停状态" // 服务端返回已暂停时的提示，空闲检测据此不再重复推送
 )
 
 var httpClient = &http.Client{Timeout: 12 * time.Second}
@@ -191,7 +192,7 @@ func pauseNow(cfg Config) (ok bool, msg string, needLogin bool) {
 			return true, "已暂停", false
 		case 400803:
 			storeToken(t)
-			return true, "已经处于暂停状态", false
+			return true, msgAlreadyPaused, false
 		}
 		lastMsg = fmt.Sprintf("[%d] %s", code, m)
 	}

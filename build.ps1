@@ -1,4 +1,4 @@
-﻿# 打包脚本：按当前版本号构建 -> 生成 LeishenPause-<版本>.exe 和 version.txt -> 版本号 +0.1
+﻿﻿# 打包脚本：按当前版本号构建 -> 生成 LeishenPause-<版本>.exe 和 version.txt -> 版本号 +0.1
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $vf = Join-Path $root 'version.go'

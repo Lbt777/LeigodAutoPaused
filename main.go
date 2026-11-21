@@ -1,4 +1,4 @@
-﻿package main
+﻿﻿package main
 
 import (
 	"fmt"
@@ -18,7 +18,9 @@ import (
 var (
 	cfg = loadConfig()
 
-	idleAnchor = time.Now() // 上次见到游戏或上次暂停的时间，空闲检测按此每 N 分钟循环
+	idleAnchor = time.Now()    // 上次见到游戏或上次暂停的时间，空闲检测按此计时
+	idleArmed  = true          // 空闲检测是否启用：触发一次后停用，游戏退出后重新启用
+	idleOn     = cfg.IdlePause // 上一轮的开关状态，用于检测菜单里的开关变化
 
 	mw        *walk.MainWindow
 	accountEd *walk.LineEdit
@@ -260,6 +262,14 @@ func monitorLoop() {
 	for {
 		time.Sleep(checkSeconds * time.Second)
 		c := cfgStore.Load().(Config)
+		// 菜单里刚打开空闲检测：从此刻开始计时，避免用旧的计时点立刻触发
+		if c.IdlePause != idleOn {
+			idleOn = c.IdlePause
+			if c.IdlePause {
+				idleArmed = true
+				idleAnchor = time.Now()
+			}
+		}
 		if processRunning(c.Process) {
 			seenMu.Lock()
 			gameSeen = true
@@ -272,20 +282,26 @@ func monitorLoop() {
 		gameSeen = false
 		seenMu.Unlock()
 
-		// 空闲检测：每 N 分钟都没见到游戏，说明只开了加速器，暂停一次并推送
-		if !wasSeen && c.IdlePause &&
-			time.Since(idleAnchor) >= time.Duration(c.IdleMinutes)*time.Minute {
+		// 游戏退出：正常暂停，并重新启用空闲检测（一轮游戏结束才算下一次空闲检测的开始）
+		if wasSeen {
+			idleArmed = true
 			idleAnchor = time.Now()
 			ok, msg, needLogin := pauseNow(c)
+			afterPause("游戏 "+c.Process+".exe 已退出", ok, msg, needLogin)
+			continue
+		}
+		// 空闲检测：每 N 分钟都没见到游戏，说明只开了加速器，暂停一次并推送。
+		// 触发后本轮空闲检测停用，直到下一次游戏退出才恢复，避免反复暂停和推送
+		if c.IdlePause && idleArmed &&
+			time.Since(idleAnchor) >= time.Duration(c.IdleMinutes)*time.Minute {
+			idleArmed = false
+			idleAnchor = time.Now()
+			ok, msg, needLogin := pauseNow(c)
+			if ok && msg == msgAlreadyPaused {
+				continue // 本来就是暂停状态，不重复暂停也不推送
+			}
 			afterPause(fmt.Sprintf("空闲检测：已 %d 分钟未运行 %s.exe", c.IdleMinutes, c.Process), ok, msg, needLogin)
-			continue
 		}
-		if !wasSeen {
-			continue
-		}
-		idleAnchor = time.Now() // 游戏退出已经暂停过，空闲计时从此刻重新开始
-		ok, msg, needLogin := pauseNow(c)
-		afterPause("游戏 "+c.Process+".exe 已退出", ok, msg, needLogin)
 	}
 }
 
