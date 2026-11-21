@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"syscall"
 	"unsafe"
 
@@ -14,6 +15,9 @@ const (
 	menuIDPause     = 2
 	menuIDAutostart = 3
 	menuIDQuit      = 4
+	menuIDIdle      = 5
+	menuIDLevel     = 6
+	idleMinuteBase  = 100 // + 分钟数，区分空闲检测时长选项
 )
 
 func appendMenu(hMenu win.HMENU, flags uint32, id uintptr, text string) {
@@ -32,34 +36,56 @@ func showTrayMenu() {
 	}
 	defer win.DestroyMenu(h)
 
-	appendMenu(h, win.MF_STRING|win.MF_GRAYED, 0, "监控进程："+cfgStore.Load().(Config).Process)
+	c := cfgStore.Load().(Config)
+	appendMenu(h, win.MF_STRING|win.MF_GRAYED, 0, "监控进程："+c.Process)
 	appendMenu(h, win.MF_STRING, menuIDSettings, "打开设置")
 	appendMenu(h, win.MF_STRING, menuIDPause, "立即暂停")
-	flags := uint32(win.MF_STRING)
-	if autostartEnabled() {
-		flags |= win.MF_CHECKED
+	appendMenu(h, checkFlags(autostartEnabled()), menuIDAutostart, "开机启动")
+
+	appendMenu(h, checkFlags(c.IdlePause), menuIDIdle, "空闲检测")
+	sub := win.CreatePopupMenu()
+	for _, m := range []int{1, 3, 5, 10, 15, 30} {
+		appendMenu(sub, checkFlags(c.IdleMinutes == m), uintptr(idleMinuteBase+m), fmt.Sprintf("%d 分钟", m))
 	}
-	appendMenu(h, flags, menuIDAutostart, "开机启动")
+	appendMenu(h, win.MF_POPUP, uintptr(sub), "空闲检测时长")
+	appendMenu(h, checkFlags(c.TimeSensitive), menuIDLevel, "时效性通知")
+
 	appendMenu(h, win.MF_SEPARATOR, 0, "")
 	appendMenu(h, win.MF_STRING, menuIDQuit, "退出")
+
+	defer win.DestroyMenu(sub)
 
 	hWnd := mw.Handle()
 	win.SetForegroundWindow(hWnd)
 	var p win.POINT
 	win.GetCursorPos(&p)
-	id := win.TrackPopupMenuEx(h, win.TPM_RETURNCMD|win.TPM_RIGHTBUTTON, p.X, p.Y, hWnd, nil)
+	id := int(win.TrackPopupMenuEx(h, win.TPM_RETURNCMD|win.TPM_RIGHTBUTTON, p.X, p.Y, hWnd, nil))
 	win.PostMessage(hWnd, win.WM_NULL, 0, 0) // 菜单关掉后把前台还回去
 
-	switch id {
-	case menuIDSettings:
+	switch {
+	case id == menuIDSettings:
 		showFromTray()
-	case menuIDPause:
+	case id == menuIDPause:
 		manualPause()
-	case menuIDAutostart:
+	case id == menuIDAutostart:
 		toggleAutostart()
-	case menuIDQuit:
+	case id == menuIDIdle:
+		updateConfig(func(c *Config) { c.IdlePause = !c.IdlePause })
+	case id > idleMinuteBase:
+		updateConfig(func(c *Config) { c.IdleMinutes = id - idleMinuteBase })
+	case id == menuIDLevel:
+		updateConfig(func(c *Config) { c.TimeSensitive = !c.TimeSensitive })
+	case id == menuIDQuit:
 		quit()
 	}
+}
+
+func checkFlags(on bool) uint32 {
+	f := uint32(win.MF_STRING)
+	if on {
+		f |= win.MF_CHECKED
+	}
+	return f
 }
 
 // 主窗口在屏幕居中显示（按真实窗口矩形算，布局完成后再调用）

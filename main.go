@@ -1,6 +1,7 @@
 ﻿package main
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -16,6 +17,9 @@ import (
 
 var (
 	cfg = loadConfig()
+
+	appStart   = time.Now()
+	idlePaused bool // 本进程启动后是否已经因空闲/游戏退出暂停过
 
 	mw        *walk.MainWindow
 	accountEd *walk.LineEdit
@@ -120,7 +124,7 @@ func afterPause(reason string, ok bool, msg string, needLogin bool) {
 	if !ok {
 		title = "雷神暂停失败"
 	}
-	pushBark(c.BarkKey, title, reason+"\n"+msg+"\n"+time.Now().Format("2006-01-02 15:04:05"))
+	pushBark(c.BarkKey, title, reason+"\n"+msg+"\n"+time.Now().Format("2006-01-02 15:04:05"), c.TimeSensitive)
 }
 
 func manualPause() {
@@ -267,9 +271,19 @@ func monitorLoop() {
 		wasSeen := gameSeen
 		gameSeen = false
 		seenMu.Unlock()
+
+		// 空闲检测：启动够久还没见过游戏，说明只开了加速器，暂停一次
+		if !wasSeen && !idlePaused && c.IdlePause &&
+			time.Since(appStart) >= time.Duration(c.IdleMinutes)*time.Minute {
+			idlePaused = true
+			ok, msg, needLogin := pauseNow(c)
+			afterPause(fmt.Sprintf("空闲检测：启动 %d 分钟未运行 %s.exe", c.IdleMinutes, c.Process), ok, msg, needLogin)
+			continue
+		}
 		if !wasSeen {
 			continue
 		}
+		idlePaused = true // 游戏退出已经暂停过，空闲检测不用重复
 		ok, msg, needLogin := pauseNow(c)
 		afterPause("游戏 "+c.Process+".exe 已退出", ok, msg, needLogin)
 	}

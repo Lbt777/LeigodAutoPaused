@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -16,10 +17,13 @@ import (
 
 // 配置全部来自本机的 config.ini，密码是明文，不加密、不上传
 type Config struct {
-	Process  string // 游戏进程名，不带 .exe
-	Account  string
-	Password string
-	BarkKey  string
+	Process      string // 游戏进程名，不带 .exe
+	Account      string
+	Password     string
+	BarkKey      string
+	IdlePause    bool // 空闲检测开关
+	IdleMinutes  int  // 启动多少分钟仍没进程就暂停
+	TimeSensitive bool // Bark 用时效性通知
 }
 
 const (
@@ -32,7 +36,9 @@ const (
 func dataDir() string    { return filepath.Join(os.Getenv("APPDATA"), "LeishenAutoPause") }
 func configPath() string { return filepath.Join(dataDir(), "config.ini") }
 
-func defaultConfig() Config { return Config{Process: defaultProcess} }
+func defaultConfig() Config {
+	return Config{Process: defaultProcess, IdleMinutes: 3}
+}
 
 // 账号密码填了就算就绪；BarkAppKey 选填，为空只是不推送
 func (c Config) ready() bool {
@@ -48,7 +54,28 @@ const configTemplate = `; 雷神自动暂停 · 本地配置（仅保存在本�
 密码=%s
 ; Bark App 首页复制的设备 Key，留空则不推送
 BarkAppKey=%s
+; 空闲检测：启动若干分钟仍没检测到游戏进程就自动暂停（开/关）
+空闲检测=%s
+; 空闲检测时长（分钟）
+空闲检测分钟=%d
+; Bark 推送使用时效性通知（专注模式下也能显示，开/关）
+时效性通知=%s
 `
+
+func onOff(v bool) string {
+	if v {
+		return "开"
+	}
+	return "关"
+}
+
+func parseSwitch(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "开", "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
 
 func loadConfig() Config {
 	b, err := os.ReadFile(configPath())
@@ -79,6 +106,14 @@ func parseConfig(text string) Config {
 			c.Password = v
 		case "BarkAppKey", "BarkKey":
 			c.BarkKey = v
+		case "空闲检测":
+			c.IdlePause = parseSwitch(v)
+		case "空闲检测分钟":
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				c.IdleMinutes = n
+			}
+		case "时效性通知":
+			c.TimeSensitive = parseSwitch(v)
 		}
 	}
 	if c.Process == "" {
@@ -92,7 +127,16 @@ func saveConfig(c Config) error {
 		return err
 	}
 	return os.WriteFile(configPath(), []byte(fmt.Sprintf(configTemplate,
-		c.Process, c.Account, c.Password, c.BarkKey)), 0o644)
+		c.Process, c.Account, c.Password, c.BarkKey,
+		onOff(c.IdlePause), c.IdleMinutes, onOff(c.TimeSensitive))), 0o644)
+}
+
+// 菜单里改了配置：立刻生效并写回文件
+func updateConfig(fn func(*Config)) {
+	c := cfgStore.Load().(Config)
+	fn(&c)
+	_ = saveConfig(c)
+	cfgStore.Store(c)
 }
 
 // 配置文件不存在时写一份空模板，方便用户直接改
@@ -103,8 +147,10 @@ func ensureConfigFile() {
 	if err := os.MkdirAll(dataDir(), 0o755); err != nil {
 		return
 	}
+	d := defaultConfig()
 	_ = os.WriteFile(configPath(), []byte(fmt.Sprintf(configTemplate,
-		defaultProcess, "", "", "")), 0o644)
+		d.Process, d.Account, d.Password, d.BarkKey,
+		onOff(d.IdlePause), d.IdleMinutes, onOff(d.TimeSensitive))), 0o644)
 }
 
 func barkURLFromKey(key string) string {

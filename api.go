@@ -216,13 +216,17 @@ func pauseNow(cfg Config) (ok bool, msg string, needLogin bool) {
 	return false, fmt.Sprintf("[%d] %s", code, m), false
 }
 
-func pushBark(barkKey, title, body string) {
+func pushBark(barkKey, title, body string, timeSensitive bool) {
 	if barkKey == "" {
 		return
 	}
+	level := "active"
+	if timeSensitive {
+		level = "timeSensitive" // 专注模式下也显示
+	}
 	u := "https://api.day.app/" + url.PathEscape(barkKey) + "/" +
 		url.PathEscape(title) + "/" + url.PathEscape(body) +
-		"?group=" + url.QueryEscape("雷神加速器") + "&level=active"
+		"?group=" + url.QueryEscape("雷神加速器") + "&level=" + level + "&sound=glass"
 	resp, err := httpClient.Get(u)
 	if err != nil {
 		return

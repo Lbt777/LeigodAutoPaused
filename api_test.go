@@ -51,4 +51,13 @@ func TestParseConfig(t *testing.T) {
 	if got := parseConfig("").Process; got != defaultProcess {
 		t.Fatalf("缺省进程名应为 %s，实际 %s", defaultProcess, got)
 	}
+	// 新的菜单/推送配置项
+	def := parseConfig("")
+	if def.IdlePause || def.IdleMinutes != 3 || def.TimeSensitive {
+		t.Fatalf("空闲检测默认应为关闭、3 分钟，时效性通知默认关闭：%+v", def)
+	}
+	c2 := parseConfig("空闲检测=开\n空闲检测分钟=10\n时效性通知=开")
+	if !c2.IdlePause || c2.IdleMinutes != 10 || !c2.TimeSensitive {
+		t.Fatalf("开关解析不对：%+v", c2)
+	}
 }
